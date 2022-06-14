@@ -143,6 +143,7 @@ rdb_index(Head, Spec), integer(Spec) =>
 add_to_clause_index(Spec, _:Head, PID, CRef), integer(Spec) =>
     arg(Spec, Head, Arg),
     term_hash(Arg, 1, 2147483647, Hash),
+    assertion(nonvar(Hash)),            % TBD: variables in the head
     s_p_sp(PID, Hash, Id),
     index_table(DB),
     rocks_merge(DB, Id, CRef).
