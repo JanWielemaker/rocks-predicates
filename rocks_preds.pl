@@ -197,7 +197,7 @@ list_triple(SP, Oid) :-
     format('~p ~t~20|~p ~t~40|~p~n', [S,P,O]).
 
 extern_or_plain(Id, Term) :-
-    (   extern(Id, Term0)
+    (   extern(Id, Term0)               % false positives!
     ->  Term = Term0
     ;   Term = id(Id)
     ).
