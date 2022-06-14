@@ -11,6 +11,7 @@
 :- use_module(library(prolog_code)).
 :- use_module(library(debug)).
 :- use_module(library(filesex)).
+:- use_module(library(lists)).
 
 /** <module> Store full predicates in a RocksDB
 
@@ -71,10 +72,14 @@ rdb_clause(Head, Body, CID), nonvar(CID) =>
 rdb_clause(Head, Body, CID) =>
     pi_head(PI, Head),
     intern(PI, PID),
-    intern(last_clause_id, LID),
-    t_intern(PID, LID, LastId),
-    between(1, LastId, ClauseNo),
-    t_intern(PID, ClauseNo, CID),
+    (   rdb_clause_index(PID, Index),
+        rdb_candidates(Index, Head, Candidates)
+    ->  member(CID, Candidates)
+    ;   intern(last_clause_id, LID),
+        t_intern(PID, LID, LastId),
+        between(1, LastId, ClauseNo),
+        t_intern(PID, ClauseNo, CID)
+    ),
     extern(CID, Clause),
     Clause = (Head :- Body).
 
@@ -132,7 +137,8 @@ rdb_index(Head, Spec), integer(Spec) =>
     pi_head(PI, Head),
     intern(PI, PID),
     forall(rdb_clause(Head, _, CRef),
-           add_to_clause_index(Spec, Head, PID, CRef)).
+           add_to_clause_index(Spec, Head, PID, CRef)),
+    register_clause_index(PID, Spec).
 
 add_to_clause_index(Spec, _:Head, PID, CRef), integer(Spec) =>
     arg(Spec, Head, Arg),
@@ -141,19 +147,46 @@ add_to_clause_index(Spec, _:Head, PID, CRef), integer(Spec) =>
     index_table(DB),
     rocks_merge(DB, Id, CRef).
 
-%!  rdb_candidates(+Spec, :Head, -Candidates) is det.
+%!  register_clause_index(PID, Spec) is det.
+%
+%   Register PID has index Spec.
+%
+%   @tbd Keep indexes sorted on quality
+%   @tbd Move this to the index RocksDB, such that destruction
+%   also destroys this.
+
+register_clause_index(PID, Spec) :-
+    intern(clause_indexes, P),
+    (   t_intern(PID, P, IID)
+    ->  extern(IID, Indexes),
+        append(Indexes, [Spec], NewIndexes)
+    ;   NewIndexes = [Spec]
+    ),
+    intern(NewIndexes, NIID),
+    put_intern(PID, P, NIID).
+
+%!  rdb_clause_index(+PID, -Index) is nondet.
+%
+%   True when Index is a  clause   index  specification on the predicate
+%   associated with the interned PID.
+
+rdb_clause_index(PID, Index) :-
+    intern(clause_indexes, P),
+    t_intern(PID, P, IID),
+    extern(IID, Indexes),
+    member(Index, Indexes).
+
+%!  rdb_candidates(+Spec, :Head, -Candidates) is semidet.
 
 rdb_candidates(Spec, M:Head, Candidates), integer(Spec) =>
     arg(Spec, Head, Arg),
     term_hash(Arg, 1, 2147483647, Hash),
-    (   var(Hash)
-    ->  Candidates = all
-    ;   pi_head(PI, M:Head),
-        intern(PI, PID),
-        s_p_sp(PID, Hash, Id),
-        index_table(DB),
-        rocks_get(DB, Id, Candidates)
-    ).
+    nonvar(Hash),
+    pi_head(PI, M:Head),
+    intern(PI, PID),
+    s_p_sp(PID, Hash, Id),
+    index_table(DB),
+    rocks_get(DB, Id, Candidates).
 
 
 		 /*******************************
