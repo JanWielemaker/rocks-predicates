@@ -3,9 +3,12 @@
 user:file_search_path(wn, '/home/janw/3rdparty/Wordnet-3.0/prolog').
 
 wn_load :-
-    rdb_open('wn.db'),
     forall(wn_file(File),
-           rdb_load_file(wn(File))).
+           wn_load(File)).
+
+wn_load(File) :-
+    rdb_open('wn.db'),
+    rdb_load_file(wn(File)).
 
 wn_file(wn_ant).
 wn_file(wn_at).

@@ -19,7 +19,8 @@ Databases:
 
 :- meta_predicate
     rdb_assertz(:),
-    rdb_clause(:, -).
+    rdb_clause(:, -),
+    rdb_load_file(:).
 
 
 :- dynamic
@@ -34,12 +35,15 @@ Databases:
 rdb_assertz(Clause) :-
     clause_head_body(Clause, Head, Body),
     pi_head(PI, Head),
-    (   t(PI, last_clause_id, Id)
+    intern(PI, PID),
+    intern(last_clause_id, LID),
+    (   t_intern(PID, LID, Id)
     ->  NId is Id+1
     ;   NId is 1
     ),
-    put(PI, last_clause_id, NId),
-    put(NId, clause, (Head :- Body)).
+    put_intern(PID, LID, NId),
+    intern((Head :- Body), CID),
+    put_intern(PID, NId, CID).
 
 %!  rdb_clause(+Head, -Body) is nondet.
 %
@@ -47,9 +51,12 @@ rdb_assertz(Clause) :-
 
 rdb_clause(Head, Body) :-
     pi_head(PI, Head),
-    t(PI, last_clause_id, LastId),
+    intern(PI, PID),
+    intern(last_clause_id, LID),
+    t_intern(PID, LID, LastId),
     between(1, LastId, ClauseNo),
-    t(ClauseNo, clause, (Head :- Body)).
+    t_intern(PID, ClauseNo, CID),
+    extern(CID, (Head :- Body)).
 
 clause_head_body((Head0 :- Body0), Head, Body) =>
     Head = Head0,
@@ -58,12 +65,12 @@ clause_head_body(Head0, Head, Body) =>
     Head = Head0,
     Body = true.
 
-%!  rdb_load_file(+File) is det.
+%!  rdb_load_file(:File) is det.
 %
 %   Load all clauses from File  into   a  persistent database. Note this
 %   does not (yet) deal with directives, term expansion, etc.
 
-rdb_load_file(File) :-
+rdb_load_file(M:File) :-
     get_time(T0),
     absolute_file_name(File, FullFile,
                        [ file_type(prolog),
@@ -71,23 +78,23 @@ rdb_load_file(File) :-
                        ]),
     setup_call_cleanup(
         open(FullFile, read, In),
-        rdb_load_stream(In, Clauses),
+        rdb_load_stream(In, M, Clauses),
         close(In)),
     get_time(T1),
     T is T1-T0,
     print_message(informational, rdb_load_file(FullFile, Clauses, T)).
 
-rdb_load_stream(In, Count) :-
+rdb_load_stream(In, M, Count) :-
     read_term(In, T0, []),
-    load_stream(T0, In, 0, Count).
+    load_stream(T0, In, M, 0, Count).
 
-load_stream(end_of_file, _, Count, Count) :-
+load_stream(end_of_file, _, _, Count, Count) :-
     !.
-load_stream(T, In, N0, N) :-
-    rdb_assertz(T),
+load_stream(T, In, M, N0, N) :-
+    rdb_assertz(M:T),
     read_term(In, T2, []),
     N1 is N0+1,
-    load_stream(T2, In, N1, N).
+    load_stream(T2, In, M, N1, N).
 
 
 		 /*******************************
@@ -97,13 +104,21 @@ load_stream(T, In, N0, N) :-
 t(S,P,O) :-
     intern(S, Sid),
     intern(P, Pid),
-    tid(Sid, Pid, OId),
+    t_intern(Sid, Pid, OId),
     extern(OId, O).
+
+t_intern(S,P,O) :-
+    triple_table(DB),
+    s_p_sp(S, P, SP),
+    rocks_get(DB, SP, O).
 
 put(S,P,O) :-
     intern(S, Sid),
     intern(P, Pid),
     intern(O, Oid),
+    put_intern(Sid, Pid, Oid).
+
+put_intern(Sid, Pid, Oid) :-
     s_p_sp(Sid, Pid, SP),
     triple_table(DB),
     rocks_put(DB, SP, Oid).
@@ -126,13 +141,11 @@ extern(Id, Term) :-
     extern_table(EDB),
     rocks_get(EDB, Id, Term).
 
-tid(S,P,O) :-
-    triple_table(DB),
-    s_p_sp(S, P, SP),
-    rocks_get(DB, SP, O).
-
 s_p_sp(S,P,SP) :-
     SP is S<<40+P.
+sp_s_p(SP,S,P) :-
+    S is SP>>40,
+    P is SP/\0xffffff.
 
 %!  rdb_open(+Directory)
 %
@@ -177,12 +190,17 @@ rdb_list_triples :-
            list_triple(SP, O)).
 
 list_triple(SP, Oid) :-
-    Sid is SP>>40,
-    Pid is SP/\0xffffff,
-    extern(Sid, S),
-    extern(Pid, P),
-    extern(Oid, O),
+    sp_s_p(SP,Sid,Pid),
+    extern_or_plain(Sid, S),
+    extern_or_plain(Pid, P),
+    extern_or_plain(Oid, O),
     format('~p ~t~20|~p ~t~40|~p~n', [S,P,O]).
+
+extern_or_plain(Id, Term) :-
+    (   extern(Id, Term0)
+    ->  Term = Term0
+    ;   Term = id(Id)
+    ).
 
 
 		 /*******************************
