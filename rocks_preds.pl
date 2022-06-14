@@ -2,7 +2,10 @@
           [ rdb_open/1,                 % +Directory
             rdb_assertz/1,              % +Clause
             rdb_clause/2,               % +Head,-Body
-            rdb_load_file/1             % +File
+            rdb_clause/3,               % +Head,-Body,-CRef
+            rdb_load_file/1,            % +File
+            rdb_index/2,                % :Head,+Spec
+            rdb_candidates/3            % +Spec,:Head,-Candidates
           ]).
 :- use_module(library(rocksdb)).
 :- use_module(library(prolog_code)).
@@ -25,13 +28,17 @@ Interning:
 :- meta_predicate
     rdb_assertz(:),
     rdb_clause(:, -),
-    rdb_load_file(:).
+    rdb_clause(:, -, -),
+    rdb_load_file(:),
+    rdb_index(:, +),
+    rdb_candidates(+, :, -).
 
 
 :- dynamic
     intern_table/1,                     % Term --> Id
     extern_table/1,                     % Id --> Term
-    triple_table/1.                     % Sid+Pid --> Oid
+    triple_table/1,                     % Sid+Pid --> Oid
+    index_table/1.                      % Pred+Hash --> list(CRefs)
 
 %!  rdb_assertz(+Clause) is det.
 %
@@ -50,11 +57,18 @@ rdb_assertz(Clause) :-
     intern((Head :- Body), CID),
     put_intern(PID, NId, CID).
 
-%!  rdb_clause(+Head, -Body) is nondet.
+%!  rdb_clause(:Head, -Body) is nondet.
+%!  rdb_clause(:Head, -Body, ?CRef) is nondet.
 %
 %   Retrieve a clause from the persistent database
 
 rdb_clause(Head, Body) :-
+    rdb_clause(Head, Body, _).
+
+rdb_clause(Head, Body, CID), nonvar(CID) =>
+    extern(CID, Clause),
+    Clause = (Head :- Body).
+rdb_clause(Head, Body, CID) =>
     pi_head(PI, Head),
     intern(PI, PID),
     intern(last_clause_id, LID),
@@ -107,15 +121,39 @@ load_stream(T, In, M, N0, N) :-
 		 *           INDEXING		*
 		 *******************************/
 
-%!  rdb_index(+Head, +Spec) is det.
+%!  rdb_index(:Head, +Spec) is det.
 %
 %   Add an index for the predicate Head.  Spec is one of:
 %
 %     - An integer
 %       Create an index for the Nth argument.
 
-rdb_index(_Head, Spec), integer(Spec) =>
-    true.
+rdb_index(Head, Spec), integer(Spec) =>
+    pi_head(PI, Head),
+    intern(PI, PID),
+    forall(rdb_clause(Head, _, CRef),
+           add_to_clause_index(Spec, Head, PID, CRef)).
+
+add_to_clause_index(Spec, _:Head, PID, CRef), integer(Spec) =>
+    arg(Spec, Head, Arg),
+    term_hash(Arg, 1, 2147483647, Hash),
+    s_p_sp(PID, Hash, Id),
+    index_table(DB),
+    rocks_merge(DB, Id, CRef).
+
+%!  rdb_candidates(+Spec, :Head, -Candidates) is det.
+
+rdb_candidates(Spec, M:Head, Candidates), integer(Spec) =>
+    pi_head(PI, M:Head),
+    intern(PI, PID),
+    arg(Spec, Head, Arg),
+    term_hash(Arg, 1, 2147483647, Hash),
+    (   var(Hash)
+    ->  Candidates = all
+    ;   s_p_sp(PID, Hash, Id),
+        index_table(DB),
+        rocks_get(DB, Id, Candidates)
+    ).
 
 
 		 /*******************************
@@ -214,18 +252,27 @@ rdb_open(Dir) :-
     directory_file_path(Dir, intern, InternName),
     directory_file_path(Dir, extern, ExternName),
     directory_file_path(Dir, triple, TripleName),
+    directory_file_path(Dir, index,  IndexName),
     rocks_open(InternName, IDB, [ key(term), value(int64) ]),
     rocks_open(ExternName, EDB, [ key(int64), value(term) ]),
     rocks_open(TripleName, TDB, [ key(int64), value(int64) ]),
+    rocks_open(IndexName,  IDX, [ key(int64), value(term), merge(merge_index) ]),
     asserta(intern_table(IDB)),
     asserta(extern_table(EDB)),
-    asserta(triple_table(TDB)).
+    asserta(triple_table(TDB)),
+    asserta(index_table(IDX)).
 
 ensure_directory(Dir) :-
     exists_directory(Dir),
     !.
 ensure_directory(Dir) :-
     make_directory(Dir).
+
+:- det(merge_index/5).
+merge_index(partial, _Key, Left, Right, Result) :-
+    append(Left, Right, Result).
+merge_index(full, _Key, Initial, Additions, Result) :-
+    append(Initial, Additions, Result).
 
 
 		 /*******************************
