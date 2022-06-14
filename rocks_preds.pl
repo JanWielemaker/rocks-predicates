@@ -144,13 +144,13 @@ add_to_clause_index(Spec, _:Head, PID, CRef), integer(Spec) =>
 %!  rdb_candidates(+Spec, :Head, -Candidates) is det.
 
 rdb_candidates(Spec, M:Head, Candidates), integer(Spec) =>
-    pi_head(PI, M:Head),
-    intern(PI, PID),
     arg(Spec, Head, Arg),
     term_hash(Arg, 1, 2147483647, Hash),
     (   var(Hash)
     ->  Candidates = all
-    ;   s_p_sp(PID, Hash, Id),
+    ;   pi_head(PI, M:Head),
+        intern(PI, PID),
+        s_p_sp(PID, Hash, Id),
         index_table(DB),
         rocks_get(DB, Id, Candidates)
     ).
