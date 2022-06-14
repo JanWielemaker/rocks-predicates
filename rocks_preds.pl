@@ -1,7 +1,8 @@
 :- module(rocks_preds,
           [ rdb_open/1,                 % +Directory
             rdb_assertz/1,              % +Clause
-            rdb_clause/2                % +Head,-Body
+            rdb_clause/2,               % +Head,-Body
+            rdb_load_file/1             % +File
           ]).
 :- use_module(library(rocksdb)).
 :- use_module(library(prolog_code)).
@@ -57,6 +58,37 @@ clause_head_body(Head0, Head, Body) =>
     Head = Head0,
     Body = true.
 
+%!  rdb_load_file(+File) is det.
+%
+%   Load all clauses from File  into   a  persistent database. Note this
+%   does not (yet) deal with directives, term expansion, etc.
+
+rdb_load_file(File) :-
+    get_time(T0),
+    absolute_file_name(File, FullFile,
+                       [ file_type(prolog),
+                         access(read)
+                       ]),
+    setup_call_cleanup(
+        open(FullFile, read, In),
+        rdb_load_stream(In, Clauses),
+        close(In)),
+    get_time(T1),
+    T is T1-T0,
+    print_message(informational, rdb_load_file(FullFile, Clauses, T)).
+
+rdb_load_stream(In, Count) :-
+    read_term(In, T0, []),
+    load_stream(T0, In, 0, Count).
+
+load_stream(end_of_file, _, Count, Count) :-
+    !.
+load_stream(T, In, N0, N) :-
+    rdb_assertz(T),
+    read_term(In, T2, []),
+    N1 is N0+1,
+    load_stream(T2, In, N1, N).
+
 
 		 /*******************************
 		 *        TRIPLE DATABASE	*
@@ -106,6 +138,9 @@ s_p_sp(S,P,SP) :-
 %
 %   Open a database for persistent predicates
 
+rdb_open(_Dir) :-
+    intern_table(_),
+    !.
 rdb_open(Dir) :-
     ensure_directory(Dir),
     directory_file_path(Dir, intern, InternName),
@@ -148,3 +183,13 @@ list_triple(SP, Oid) :-
     extern(Pid, P),
     extern(Oid, O),
     format('~p ~t~20|~p ~t~40|~p~n', [S,P,O]).
+
+
+		 /*******************************
+		 *           MESSAGES		*
+		 *******************************/
+
+:- multifile prolog:message//1.
+
+prolog:message(rdb_load_file(File, Clauses, T)) -->
+    [ 'Loaded ~D clauses from ~w in ~3f seconds'-[Clauses, File, T] ].
