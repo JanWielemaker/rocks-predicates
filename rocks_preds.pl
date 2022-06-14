@@ -11,11 +11,14 @@
 
 /** <module> Store full predicates in a RocksDB
 
-Databases:
+Triples:
 
-  - Term --> id
-  - S,P  --> O
+  PI.last_clause_id        --> id(Integer)
+  PI.id(1..last_clause_id) --> Clause
 
+Interning:
+  - int >= 0: as is
+  - int <  0: interned term
 
 */
 
@@ -26,9 +29,9 @@ Databases:
 
 
 :- dynamic
-    intern_table/1,
-    extern_table/1,
-    triple_table/1.
+    intern_table/1,                     % Term --> Id
+    extern_table/1,                     % Id --> Term
+    triple_table/1.                     % Sid+Pid --> Oid
 
 %!  rdb_assertz(+Clause) is det.
 %
@@ -58,7 +61,8 @@ rdb_clause(Head, Body) :-
     t_intern(PID, LID, LastId),
     between(1, LastId, ClauseNo),
     t_intern(PID, ClauseNo, CID),
-    extern(CID, (Head :- Body)).
+    extern(CID, Clause),
+    Clause = (Head :- Body).
 
 clause_head_body((Head0 :- Body0), Head, Body) =>
     Head = Head0,
@@ -100,6 +104,21 @@ load_stream(T, In, M, N0, N) :-
 
 
 		 /*******************************
+		 *           INDEXING		*
+		 *******************************/
+
+%!  rdb_index(+Head, +Spec) is det.
+%
+%   Add an index for the predicate Head.  Spec is one of:
+%
+%     - An integer
+%       Create an index for the Nth argument.
+
+rdb_index(_Head, Spec), integer(Spec) =>
+    true.
+
+
+		 /*******************************
 		 *        TRIPLE DATABASE	*
 		 *******************************/
 
@@ -125,29 +144,63 @@ put_intern(Sid, Pid, Oid) :-
     triple_table(DB),
     rocks_put(DB, SP, Oid).
 
-intern(Term, Id) :-
+:- det(intern/2).
+
+intern(Term, Id), integer(Term), Term >= 0 =>
+    Id = Term.
+intern(Term, Id) =>
     intern_table(DB),
     (   rocks_get(DB, Term, Id0)
     ->  Id = Id0
     ;   extern_table(EDB),
         (   rocks_get(DB, '$$LastID', Id0)
-        ->  Id is Id0+1
-        ;   Id is 1
+        ->  Id is Id0-1
+        ;   Id is -1
         ),
         rocks_put(DB, '$$LastID', Id),
         rocks_put(DB, Term, Id),
         rocks_put(EDB, Id, Term)
     ).
 
-extern(Id, Term) :-
+:- det(extern/2).
+extern(Id, Term), integer(Id), Id >= 0 =>
+    Term = Id.
+extern(Id, Term) =>
     extern_table(EDB),
     rocks_get(EDB, Id, Term).
 
+%!  s_p_sp(+S,+P,-SP)
+%
+%   Combine two interned values to a new one. Note that both S and P can
+%   be negative. Prolog cannot cast unsigned   to signed integers, so we
+%   represent the pair using a quadruple.
+%
+%    - 24 bits abs(S)
+%    - 38 bits abs(P)
+%    -  1 bit  sign(S)
+%    -  1 bit  sign(P)
+
 s_p_sp(S,P,SP) :-
-    SP is S<<40+P.
+    sign(S, P, Sign),
+    SP is abs(S)<<40 \/ abs(P)<<2 \/ Sign.
+
+sign(S,P,Sign), S>0, P>0 => Sign = 0x0.
+sign(_,P,Sign),      P>0 => Sign = 0x1.
+sign(S,_,Sign), S>0      => Sign = 0x2.
+sign(_,_,Sign)           => Sign = 0x3.
+
 sp_s_p(SP,S,P) :-
-    S is SP>>40,
-    P is SP/\0xffffff.
+    S0 is SP>>40,
+    P0 is SP>>2 /\ 0x1fffffffff,
+    (   SP /\ 0x1 =\= 0
+    ->  S is -S0
+    ;   S = S0
+    ),
+    (   SP /\ 0x2 =\= 0
+    ->  P is -P0
+    ;   P = P0
+    ).
+
 
 %!  rdb_open(+Directory)
 %
@@ -193,17 +246,10 @@ rdb_list_triples :-
 
 list_triple(SP, Oid) :-
     sp_s_p(SP,Sid,Pid),
-    extern_or_plain(Sid, S),
-    extern_or_plain(Pid, P),
-    extern_or_plain(Oid, O),
+    extern(Sid, S),
+    extern(Pid, P),
+    extern(Oid, O),
     format('~p ~t~20|~p ~t~40|~p~n', [S,P,O]).
-
-extern_or_plain(Id, Term) :-
-    (   extern(Id, Term0)               % false positives!
-    ->  Term = Term0
-    ;   Term = id(Id)
-    ).
-
 
 		 /*******************************
 		 *           MESSAGES		*
