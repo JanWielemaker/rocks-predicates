@@ -33,10 +33,12 @@ Databases:
 rdb_assertz(Clause) :-
     clause_head_body(Clause, Head, Body),
     pi_head(PI, Head),
-    t(PI, last_clause_id, Id),
-    NId is Id+1,
+    (   t(PI, last_clause_id, Id)
+    ->  NId is Id+1
+    ;   NId is 1
+    ),
     put(PI, last_clause_id, NId),
-    put(NId, value, (Head :- Body)).
+    put(NId, clause, (Head :- Body)).
 
 %!  rdb_clause(+Head, -Body) is nondet.
 %
@@ -46,7 +48,7 @@ rdb_clause(Head, Body) :-
     pi_head(PI, Head),
     t(PI, last_clause_id, LastId),
     between(1, LastId, ClauseNo),
-    t(ClauseNo, clause, (Head, Body)).
+    t(ClauseNo, clause, (Head :- Body)).
 
 clause_head_body((Head0 :- Body0), Head, Body) =>
     Head = Head0,
@@ -79,8 +81,10 @@ intern(Term, Id) :-
     (   rocks_get(DB, Term, Id0)
     ->  Id = Id0
     ;   extern_table(EDB),
-        rocks_get(DB, '$$LastID', Id0),
-        Id is Id0+1,
+        (   rocks_get(DB, '$$LastID', Id0)
+        ->  Id is Id0+1
+        ;   Id is 1
+        ),
         rocks_put(DB, '$$LastID', Id),
         rocks_put(DB, Term, Id),
         rocks_put(EDB, Id, Term)
@@ -119,3 +123,28 @@ ensure_directory(Dir) :-
     !.
 ensure_directory(Dir) :-
     make_directory(Dir).
+
+
+		 /*******************************
+		 *            DEBUGGING		*
+		 *******************************/
+
+rdb_list_intern :-
+    intern_table(IDB),
+    extern_table(EDB),
+    forall((rocks_enum(IDB, Term, Id), Term \== '$$LastID'),
+           ( assertion((rocks_get(EDB, Id, Term2), Term2 =@= Term)),
+             format('~p ~t~20|<-> ~p~n', [Id, Term]))).
+
+rdb_list_triples :-
+    triple_table(TDB),
+    forall(rocks_enum(TDB, SP, O),
+           list_triple(SP, O)).
+
+list_triple(SP, Oid) :-
+    Sid is SP>>40,
+    Pid is SP/\0xffffff,
+    extern(Sid, S),
+    extern(Pid, P),
+    extern(Oid, O),
+    format('~p ~t~20|~p ~t~40|~p~n', [S,P,O]).
