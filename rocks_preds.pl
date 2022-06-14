@@ -6,6 +6,8 @@
           ]).
 :- use_module(library(rocksdb)).
 :- use_module(library(prolog_code)).
+:- use_module(library(debug)).
+:- use_module(library(filesex)).
 
 /** <module> Store full predicates in a RocksDB
 
