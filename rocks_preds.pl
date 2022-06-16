@@ -232,11 +232,15 @@ rdb_destroy_index(Dir, PI, Spec) :-
 %   True when Index is a  clause   index  specification on the predicate
 %   PI.
 
+:- table
+    rdb_clause_index/3.
+
 rdb_clause_index(DB, PI, Index) :-
     pred_index_prefix(PI, Prefix),
-    rocks_enum_from(DB, Key, true, Prefix),
+    rocks_enum_from(DB, Key, Value, Prefix),
     (   sub_string(Key, 0, _, After, Prefix)
-    ->  sub_string(Key, _, After, 0, IndexS),
+    ->  Value == true,                  % Index is valid
+        sub_string(Key, _, After, 0, IndexS),
         term_string(Index, IndexS)
     ;   !, fail
     ).
