@@ -34,13 +34,17 @@
 
 :- module(rocks_preds,
           [ rdb_open/2,                 % +Dir, -DB
-            rdb_assertz/1,              % +Clause
-            rdb_assertz/2,              % +Dir, +Clause
-            rdb_clause/2,               % +Head,-Body
-            rdb_clause/3,               % +Dir, +Head, -Body
-            rdb_clause/4,               % +Dir, +Head, -Body, ?CRef
-            rdb_nth_clause/3,           % +Head,?Nth,?Reference
-            rdb_nth_clause/4,           % +Dir,+Head,?Nth,?Reference
+            rdb_assertz/1,              % :Clause
+            rdb_assertz/2,              % +Dir, :Clause
+            rdb_retract/1,              % :Clause
+            rdb_retract/2,              % +Dir, :Clause
+            rdb_retractall/1,           % :Head
+            rdb_retractall/2,           % +Dir, :Head
+            rdb_clause/2,               % :Head, -Body
+            rdb_clause/3,               % +Dir, :Head, -Body
+            rdb_clause/4,               % +Dir, :Head, -Body, ?CRef
+            rdb_nth_clause/3,           % :Head, ?Nth, ?Reference
+            rdb_nth_clause/4,           % +Dir, :Head, ?Nth, ?Reference
             rdb_load_file/1,            % +File
             rdb_load_file/2,            % +Dir, +File
             rdb_current_predicate/1,    % ?PI
@@ -65,6 +69,10 @@
 :- meta_predicate
     rdb_assertz(:),
     rdb_assertz(+, :),
+    rdb_retract(:),
+    rdb_retract(+, :),
+    rdb_retractall(:),
+    rdb_retractall(+, :),
     rdb_current_predicate(:),
     rdb_current_predicate(+, :),
     rdb_predicate_property(:, ?),
@@ -113,6 +121,36 @@ rdb_assertz(Dir, Clause) :-
 register_predicate(DB, PI) :-
     pred_current_key(PI, Key),
     rocks_put(DB, Key, true).
+
+%!  rdb_retract(:Clause) is nondet.
+%!  rdb_retract(+Dir, :Clause) is nondet.
+
+rdb_retract(Clause) :-
+    default_db(Dir),
+    rdb_retract(Dir, Clause).
+
+rdb_retract(Dir, Clause) :-
+    rdb_open(Dir, DB),
+    clause_head_body(Clause, Head, Body),
+    pi_head(PI, Head),
+    pred_property_key(PI, erased, KeyErased),
+    rdb_clause(Dir, Head, Body, CRef),
+    rocks_delete(DB, CRef),
+    (   rocks_get(DB, KeyErased, Erased0)
+    ->  Erased is Erased0+1
+    ;   Erased is 1
+    ),
+    rocks_put(DB, KeyErased, Erased).
+
+%!  rdb_retractall(:Head) is det.
+%!  rdb_retractall(+Dir, :Head) is det.
+
+rdb_retractall(Head) :-
+    default_db(Dir),
+    rdb_retractall(Dir, Head).
+
+rdb_retractall(Dir, Head) :-
+    forall(rdb_retract(Dir, (Head :- _)), true).
 
 %!  rdb_current_predicate(?PI) is nondet.
 %!  rdb_current_predicate(?Dir, ?PI) is nondet.
@@ -352,8 +390,12 @@ property(indexed(Indexes), Dir, PI) :-
 property(number_of_clauses(N), Dir, PI) :-
     rdb_open(Dir, DB),
     pred_property_key(PI, last_clause, KeyLC),
-    rocks_get(DB, KeyLC, N).
-
+    pred_property_key(PI, erased, KeyErased),
+    rocks_get(DB, KeyLC, N0),
+    (   rocks_get(DB, KeyErased, Erased)
+    ->  N is N0-Erased
+    ;   N = N0
+    ).
 
 
 		 /*******************************
