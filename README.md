@@ -38,7 +38,7 @@ Measured on AMD3950X based system, 64Gb mem and M2 SSD drive.
   - Load time: 11.7 sec.
   - RocksDB size: 99Mb
   - rdb_index(hyp/2, 1) (89,089 clauses) --> 1.35 sec.
-  - random query time on hyp(+,-): 10us
+  - random query time on hyp(+,-): 10usec
 
 ### RDF (Geonames)
 
@@ -48,7 +48,28 @@ Measured on AMD3950X based system, 64Gb mem and M2 SSD drive.
   - RocksDB size: 5.2Gb
   - Count triples: 165 sec (152 sec for HDT).
   - rdb_index(rdf/3,1) --> 1383 sec.
+  - random query time on rdf(+,-,-): 30usec (HTD: 7.8usec)
 
 ## Future
 
-For now, the access predicate is rdb_clause/3.  This is fine for facts
+For now, the access predicate is rdb_clause/3. This is fine for facts.
+We could execute the code by calling the body as below.
+
+```
+p(X) :-
+    rdb_clause(p(X), Body),
+    call(Body).
+```
+
+The disadvantage of this is that the cut is scoped to Body in that case.
+This can be fixed by interpreting the   body  or have a call/1 variation
+that does not scope the cut.
+
+### Cashed execution
+
+  - If a predicate is small, simply extract   it  from the database and call
+    it.
+  - If it is larger, create a predicate
+
+	p(Index, Hash, Arg1, ... ArgN) :-
+	    Body.
