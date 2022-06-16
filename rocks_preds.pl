@@ -191,7 +191,8 @@ rdb_index(Dir, PI, Spec), integer(Spec) =>
     rocks_put(DB, KeyIndex, indexing),
     forall(rdb_clause(Dir, Head, _, CRef),
            add_to_clause_index(DB, PI, Spec, Head, CRef)),
-    rocks_put(DB, KeyIndex, true).
+    rocks_put(DB, KeyIndex, true),
+    flush_index_cache(DB, PI).
 
 add_to_clause_index(DB, PI, Spec, _:Head, CRef), integer(Spec) =>
     arg(Spec, Head, Arg),
@@ -224,7 +225,8 @@ rdb_destroy_index(Dir, PI, Spec) :-
         )
     ;   true
     ),
-    rocks_delete(DB, KeyIndex).
+    rocks_delete(DB, KeyIndex),
+    flush_index_cache(DB, PI).
 
 
 %!  rdb_clause_index(+DB, :PI, -Index) is nondet.
@@ -244,6 +246,9 @@ rdb_clause_index(DB, PI, Index) :-
         term_string(Index, IndexS)
     ;   !, fail
     ).
+
+flush_index_cache(DB, PI) :-
+    abolish_table_subgoals(rdb_clause_index(DB, PI, _)).
 
 %!  rdb_candidates(+DB, +Spec, :Head, -Candidates) is semidet.
 
