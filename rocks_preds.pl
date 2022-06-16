@@ -9,6 +9,8 @@
             rdb_load_file/2,            % +Dir, +File
             rdb_current_predicate/1,    % ?PI
             rdb_current_predicate/2,    % +Dir,?PI
+            rdb_predicate_property/2,   % :PI,?Property
+            rdb_predicate_property/3,   % ?Dir,:PI,?Property
             rdb_index/2,                % :PI, +Spec
             rdb_index/3,                % +Dir, :PI, +Spec
             rdb_destroy_index/2,        % :PI,+Spec
@@ -29,6 +31,8 @@
     rdb_assertz(+, :),
     rdb_current_predicate(:),
     rdb_current_predicate(+, :),
+    rdb_predicate_property(:, ?),
+    rdb_predicate_property(?, :, ?),
     rdb_clause(:, -),
     rdb_clause(+, :, -),
     rdb_clause(+, :, -, ?),
@@ -73,22 +77,23 @@ register_predicate(DB, PI) :-
     rocks_put(DB, Key, true).
 
 %!  rdb_current_predicate(?PI) is nondet.
-%!  rdb_current_predicate(+Dir, ?PI) is nondet.
+%!  rdb_current_predicate(?Dir, ?PI) is nondet.
 
 rdb_current_predicate(PI) :-
     default_db(Dir),
     rdb_current_predicate(Dir, PI).
 
 rdb_current_predicate(Dir, PI), ground(PI) =>
-    rdb_open(Dir, DB),
+    pred_table(Dir, DB),
     pred_current_key(PI, Key),
     rocks_get(DB, Key, true).
 rdb_current_predicate(Dir, PI) =>
-    rdb_open(Dir, DB),
+    pred_table(Dir, DB),
     pred_current_prefix(Prefix),
-    rocks_enum_from(DB, Key, true, Prefix),
+    rocks_enum_from(DB, Key, V, Prefix),
     (   sub_string(Key, 0, _, After, Prefix)
     ->  sub_string(Key, _, After, 0, PIs),
+        V == true,
         term_string(PI, PIs)
     ;   !, fail
     ).
@@ -262,8 +267,34 @@ rdb_candidates(DB, Spec, M:Head, Candidates), integer(Spec) =>
     rocks_get(DB, Key, Candidates).
 
 
+%!  rdb_predicate_property(:PI, ?Property) is nondet.
+%!  rdb_predicate_property(?Dir, :PI, ?Property) is nondet.
+%
+%   Query properties of a persistent predicate
+
+rdb_predicate_property(PI, Property) :-
+    default_db(Dir),
+    rdb_predicate_property(Dir, PI, Property).
+
+rdb_predicate_property(Dir, PI, Property) :-
+    rdb_current_predicate(Dir, PI),
+    property(Property, Dir, PI).
+
+property(database(DB), DB, _).
+property(defined, _, _).
+property(indexed(Indexes), Dir, PI) :-
+    rdb_open(Dir, DB),
+    findall(Index, rdb_clause_index(DB, PI, Index), Indexes),
+    Indexes \== [].
+property(number_of_clauses(N), Dir, PI) :-
+    rdb_open(Dir, DB),
+    pred_property_key(PI, last_clause, KeyLC),
+    rocks_get(DB, KeyLC, N).
+
+
+
 		 /*******************************
-		 *        TRIPLE DATABASE	*
+		 *             KEYS		*
 		 *******************************/
 
 pred_clause_key(PI, Nth, Key) :-
@@ -294,7 +325,9 @@ pred_index_key(PI, Spec, Hash, Key) :-
 
 %!  rdb_open(+Directory, -DB)
 %
-%   Open a database for persistent predicates
+%   Open a database for persistent  predicates.   We  use one additional
+%   level of directories such that  we   can  add  multiple databases or
+%   additional information to the primary RocksDB database.
 
 rdb_open(Dir, DB) :-
     pred_table(Dir, DB),
@@ -303,8 +336,7 @@ rdb_open(Dir, DB) :-
     ensure_directory(Dir),
     directory_file_path(Dir, predicates, PredName),
     rocks_open(PredName,  DB,
-               [ key(string), value(term),
-                 alias(predicates)
+               [ key(string), value(term)
                ]),
     asserta(pred_table(Dir, DB)).
 
