@@ -1,11 +1,14 @@
 :- module(rocks_preds,
-          [ rdb_open/1,                 % +Directory
+          [ rdb_open/2,                 % +Dir, -DB
             rdb_assertz/1,              % +Clause
+            rdb_assertz/2,              % +Dir, +Clause
             rdb_clause/2,               % +Head,-Body
-            rdb_clause/3,               % +Head,-Body,-CRef
+            rdb_clause/3,               % +Dir, +Head, -Body
+            rdb_clause/4,               % +Dir, +Head, -Body, ?CRef
             rdb_load_file/1,            % +File
+            rdb_load_file/2,            % +Dir, +File
             rdb_index/2,                % :PI, +Spec
-            rdb_candidates/3            % +Spec, :Head, -Candidates
+            rdb_index/3                 % +Dir, :PI, +Spec
           ]).
 :- use_module(library(rocksdb)).
 :- use_module(library(prolog_code)).
@@ -15,73 +18,74 @@
 
 /** <module> Store full predicates in a RocksDB
 
-Triples:
-
-  PI.last_clause_id        --> id(Integer)
-  PI.id(1..last_clause_id) --> Clause
-
-Interning:
-  - int >= 0: as is
-  - int <  0: interned term
-
 */
 
 :- meta_predicate
     rdb_assertz(:),
+    rdb_assertz(+, :),
     rdb_clause(:, -),
-    rdb_clause(:, -, -),
+    rdb_clause(+, :, -),
+    rdb_clause(+, :, -, ?),
     rdb_load_file(:),
     rdb_index(:, +),
-    rdb_candidates(+, :, -).
+    rdb_index(+, :, +).
+
 
 
 :- dynamic
-    intern_table/1,                     % Term --> Id
-    extern_table/1,                     % Id --> Term
-    triple_table/1,                     % Sid+Pid --> Oid
-    index_table/1.                      % Pred+Hash --> list(CRefs)
+    pred_table/2.                     % Dir, Table
 
-%!  rdb_assertz(+Clause) is det.
+default_db('predicates.db').
+
+%!  rdb_assertz(+Dir, +Clause) is det.
 %
 %   Store a clause in the persistent database
 
 rdb_assertz(Clause) :-
+    default_db(Dir),
+    rdb_assertz(Dir, Clause).
+
+rdb_assertz(Dir, Clause) :-
+    rdb_open(Dir, DB),
     clause_head_body(Clause, Head, Body),
     pi_head(PI, Head),
-    intern(PI, PID),
-    intern(last_clause_id, LID),
-    (   t_intern(PID, LID, Id)
+    pred_property_key(PI, last_clause, KeyLC),
+    (   rocks_get(DB, KeyLC, Id)
     ->  NId is Id+1
     ;   NId is 1
     ),
-    put_intern(PID, LID, NId),
-    intern((Head :- Body), CID),
-    put_intern(PID, NId, CID).
+    pred_clause_key(PI, NId, KeyClause),
+    rocks_put(DB, KeyClause, (Head:-Body)).
 
 %!  rdb_clause(:Head, -Body) is nondet.
-%!  rdb_clause(:Head, -Body, ?CRef) is nondet.
+%!  rdb_clause(+Dir, :Head, -Body) is nondet.
+%!  rdb_clause(+Dir, :Head, -Body, ?CRef) is nondet.
 %
 %   Retrieve a clause from the persistent database
 
 rdb_clause(Head, Body) :-
-    rdb_clause(Head, Body, _).
+    default_db(Dir),
+    rdb_clause(Dir, Head, Body).
+rdb_clause(Dir, Head, Body) :-
+    rdb_clause(Dir, Head, Body, _).
 
-rdb_clause(Head, Body, CID), nonvar(CID) =>
-    extern(CID, Clause),
-    Clause = (Head :- Body).
-rdb_clause(Head, Body, CID) =>
+rdb_clause(Dir, Head, Body, CRef), nonvar(CRef) =>
+    rdb_open(Dir, DB),
+    rocks_get(DB, CRef, (Head :- Body)).
+rdb_clause(Dir, Head, Body, CRef) =>
+    rdb_open(Dir, DB),
     pi_head(PI, Head),
-    intern(PI, PID),
-    (   rdb_clause_index(PID, Index),
-        rdb_candidates(Index, Head, Candidates)
-    ->  member(CID, Candidates)
-    ;   intern(last_clause_id, LID),
-        t_intern(PID, LID, LastId),
-        between(1, LastId, ClauseNo),
-        t_intern(PID, ClauseNo, CID)
-    ),
-    extern(CID, Clause),
-    Clause = (Head :- Body).
+    (   rdb_clause_index(DB, PI, Index),
+        rdb_candidates(DB, Index, Head, Candidates)
+    ->  member(CRef, Candidates),
+        rocks_get(DB, CRef, (Head :- Body))
+    ;   pred_clause_prefix(PI, Prefix),
+        rocks_enum_from(DB, CID, (Head:-Body), Prefix),
+        (   sub_string(CID, 0, _, _, Prefix)
+        ->  true
+        ;   !, fail
+        )
+    ).
 
 clause_head_body((Head0 :- Body0), Head, Body) =>
     Head = Head0,
@@ -91,11 +95,16 @@ clause_head_body(Head0, Head, Body) =>
     Body = true.
 
 %!  rdb_load_file(:File) is det.
+%!  rdb_load_file(+Dir, :File) is det.
 %
 %   Load all clauses from File  into   a  persistent database. Note this
 %   does not (yet) deal with directives, term expansion, etc.
 
-rdb_load_file(M:File) :-
+rdb_load_file(File) :-
+    default_db(Dir),
+    rdb_load_file(Dir, File).
+
+rdb_load_file(Dir, M:File) :-
     get_time(T0),
     absolute_file_name(File, FullFile,
                        [ file_type(prolog),
@@ -103,23 +112,23 @@ rdb_load_file(M:File) :-
                        ]),
     setup_call_cleanup(
         open(FullFile, read, In),
-        rdb_load_stream(In, M, Clauses),
+        rdb_load_stream(Dir, In, M, Clauses),
         close(In)),
     get_time(T1),
     T is T1-T0,
     print_message(informational, rdb_load_file(FullFile, Clauses, T)).
 
-rdb_load_stream(In, M, Count) :-
+rdb_load_stream(Dir, In, M, Count) :-
     read_term(In, T0, []),
-    load_stream(T0, In, M, 0, Count).
+    load_stream(T0, Dir, In, M, 0, Count).
 
-load_stream(end_of_file, _, _, Count, Count) :-
+load_stream(end_of_file, _, _, _, Count, Count) :-
     !.
-load_stream(T, In, M, N0, N) :-
-    rdb_assertz(M:T),
+load_stream(T, Dir, In, M, N0, N) :-
+    rdb_assertz(Dir, M:T),
     read_term(In, T2, []),
     N1 is N0+1,
-    load_stream(T2, In, M, N1, N).
+    load_stream(T2, Dir, In, M, N1, N).
 
 
 		 /*******************************
@@ -127,174 +136,99 @@ load_stream(T, In, M, N0, N) :-
 		 *******************************/
 
 %!  rdb_index(:PI, +Spec) is det.
+%!  rdb_index(+Dir, :PI, +Spec) is det.
 %
 %   Add an index for the predicate Head.  Spec is one of:
 %
 %     - An integer
 %       Create an index for the Nth argument.
 
-rdb_index(PI, Spec), integer(Spec) =>
-    pi_head(PI, Head),
-    intern(PI, PID),
-    forall(rdb_clause(Head, _, CRef),
-           add_to_clause_index(Spec, Head, PID, CRef)),
-    register_clause_index(PID, Spec).
+rdb_index(PI, Spec) :-
+    default_db(Dir),
+    rdb_index(Dir, PI, Spec).
 
-add_to_clause_index(Spec, _:Head, PID, CRef), integer(Spec) =>
+rdb_index(Dir, PI, Spec), integer(Spec) =>
+    pi_head(PI, Head),
+    rdb_open(Dir, DB),
+    pred_index_key(PI, Spec, KeyIndex),
+    rocks_put(DB, KeyIndex, indexing),
+    forall(rdb_clause(Dir, Head, _, CRef),
+           add_to_clause_index(DB, PI, Spec, Head, CRef)),
+    rocks_put(DB, KeyIndex, true).
+
+add_to_clause_index(DB, PI, Spec, _:Head, CRef), integer(Spec) =>
     arg(Spec, Head, Arg),
     term_hash(Arg, 1, 2147483647, Hash),
     assertion(nonvar(Hash)),            % TBD: variables in the head
-    s_p_sp(PID, Hash, Id),
-    index_table(DB),
-    rocks_merge(DB, Id, CRef).
-
-%!  register_clause_index(PID, Spec) is det.
-%
-%   Register PID has index Spec.
-%
-%   @tbd Keep indexes sorted on quality
-%   @tbd Move this to the index RocksDB, such that destruction
-%   also destroys this.
-
-register_clause_index(PID, Spec) :-
-    intern(clause_indexes, P),
-    (   t_intern(PID, P, IID)
-    ->  extern(IID, Indexes),
-        append(Indexes, [Spec], NewIndexes)
-    ;   NewIndexes = [Spec]
+    pred_index_key(PI, Spec, Hash, Key),
+    (   rocks_get(DB, Key, Clauses)
+    ->  true
+    ;   Clauses = []
     ),
-    intern(NewIndexes, NIID),
-    put_intern(PID, P, NIID).
+    rocks_put(DB, Key, [CRef|Clauses]).
 
-%!  rdb_clause_index(+PID, -Index) is nondet.
+%!  rdb_clause_index(+DB, :PI, -Index) is nondet.
 %
 %   True when Index is a  clause   index  specification on the predicate
-%   associated with the interned PID.
+%   PI.
 
-rdb_clause_index(PID, Index) :-
-    intern(clause_indexes, P),
-    t_intern(PID, P, IID),
-    extern(IID, Indexes),
-    member(Index, Indexes).
+rdb_clause_index(DB, PI, Index) :-
+    pred_index_prefix(PI, Prefix),
+    rocks_enum_from(DB, Key, true, Prefix),
+    (   sub_string(Key, 0, _, After, Prefix)
+    ->  term_string(After, Index)
+    ;   !, fail
+    ).
 
-%!  rdb_candidates(+Spec, :Head, -Candidates) is semidet.
+%!  rdb_candidates(+DB, +Spec, :Head, -Candidates) is semidet.
 
-rdb_candidates(Spec, M:Head, Candidates), integer(Spec) =>
+rdb_candidates(DB, Spec, M:Head, Candidates), integer(Spec) =>
     arg(Spec, Head, Arg),
+    nonvar(Arg),
     term_hash(Arg, 1, 2147483647, Hash),
     nonvar(Hash),
     pi_head(PI, M:Head),
-    intern(PI, PID),
-    s_p_sp(PID, Hash, Id),
-    index_table(DB),
-    rocks_get(DB, Id, Candidates).
+    pred_index_key(PI, Spec, Hash, Key),
+    rocks_get(DB, Key, Candidates).
 
 
 		 /*******************************
 		 *        TRIPLE DATABASE	*
 		 *******************************/
 
-t(S,P,O) :-
-    intern(S, Sid),
-    intern(P, Pid),
-    t_intern(Sid, Pid, OId),
-    extern(OId, O).
+pred_clause_key(PI, Nth, Key) :-
+    format(string(Key), '~q\u0001~|~`0t~16r~10+', [PI,Nth]).
 
-t_intern(S,P,O) :-
-    triple_table(DB),
-    s_p_sp(S, P, SP),
-    rocks_get(DB, SP, O).
+pred_clause_prefix(PI, Prefix) :-
+    format(string(Prefix), '~q\u0001', [PI]).
 
-put(S,P,O) :-
-    intern(S, Sid),
-    intern(P, Pid),
-    intern(O, Oid),
-    put_intern(Sid, Pid, Oid).
+pred_property_key(PI, Prop, Key) :-
+    format(string(Key), '~q\u0002~w', [PI,Prop]).
 
-put_intern(Sid, Pid, Oid) :-
-    s_p_sp(Sid, Pid, SP),
-    triple_table(DB),
-    rocks_put(DB, SP, Oid).
+pred_index_prefix(PI, Key) :-
+    format(string(Key), '~q\u0003', [PI]).
 
-:- det(intern/2).
+pred_index_key(PI, Spec, Key) :-
+    format(string(Key), '~q\u0003~q', [PI,Spec]).
 
-intern(Term, Id), integer(Term), Term >= 0 =>
-    Id = Term.
-intern(Term, Id) =>
-    intern_table(DB),
-    (   rocks_get(DB, Term, Id0)
-    ->  Id = Id0
-    ;   extern_table(EDB),
-        (   rocks_get(DB, '$$LastID', Id0)
-        ->  Id is Id0-1
-        ;   Id is -1
-        ),
-        rocks_put(DB, '$$LastID', Id),
-        rocks_put(DB, Term, Id),
-        rocks_put(EDB, Id, Term)
-    ).
+pred_index_key(PI, Spec, Hash, Key) :-
+    format(string(Key), '~q\u0004~q\u0002~16r', [PI,Spec,Hash]).
 
-:- det(extern/2).
-extern(Id, Term), integer(Id), Id >= 0 =>
-    Term = Id.
-extern(Id, Term) =>
-    extern_table(EDB),
-    rocks_get(EDB, Id, Term).
-
-%!  s_p_sp(+S,+P,-SP)
-%
-%   Combine two interned values to a new one. Note that both S and P can
-%   be negative. Prolog cannot cast unsigned   to signed integers, so we
-%   represent the pair using a quadruple.
-%
-%    - 24 bits abs(S)
-%    - 38 bits abs(P)
-%    -  1 bit  sign(S)
-%    -  1 bit  sign(P)
-
-s_p_sp(S,P,SP) :-
-    sign(S, P, Sign),
-    SP is abs(S)<<40 \/ abs(P)<<2 \/ Sign.
-
-sign(S,P,Sign), S>0, P>0 => Sign = 0x0.
-sign(_,P,Sign),      P>0 => Sign = 0x1.
-sign(S,_,Sign), S>0      => Sign = 0x2.
-sign(_,_,Sign)           => Sign = 0x3.
-
-sp_s_p(SP,S,P) :-
-    S0 is SP>>40,
-    P0 is SP>>2 /\ 0x1fffffffff,
-    (   SP /\ 0x1 =\= 0
-    ->  S is -S0
-    ;   S = S0
-    ),
-    (   SP /\ 0x2 =\= 0
-    ->  P is -P0
-    ;   P = P0
-    ).
-
-
-%!  rdb_open(+Directory)
+%!  rdb_open(+Directory, -DB)
 %
 %   Open a database for persistent predicates
 
-rdb_open(_Dir) :-
-    intern_table(_),
+rdb_open(Dir, DB) :-
+    pred_table(Dir, DB),
     !.
-rdb_open(Dir) :-
+rdb_open(Dir, DB) :-
     ensure_directory(Dir),
-    directory_file_path(Dir, intern, InternName),
-    directory_file_path(Dir, extern, ExternName),
-    directory_file_path(Dir, triple, TripleName),
-    directory_file_path(Dir, index,  IndexName),
-    rocks_open(InternName, IDB, [ key(term), value(int64) ]),
-    rocks_open(ExternName, EDB, [ key(int64), value(term) ]),
-    rocks_open(TripleName, TDB, [ key(int64), value(int64) ]),
-    rocks_open(IndexName,  IDX, [ key(int64), value(list(int64)) ]),
-    asserta(intern_table(IDB)),
-    asserta(extern_table(EDB)),
-    asserta(triple_table(TDB)),
-    asserta(index_table(IDX)).
+    directory_file_path(Dir, predicates, PredName),
+    rocks_open(PredName,  DB,
+               [ key(string), value(term),
+                 alias(predicates)
+               ]),
+    asserta(pred_table(Dir, DB)).
 
 ensure_directory(Dir) :-
     exists_directory(Dir),
@@ -306,25 +240,6 @@ ensure_directory(Dir) :-
 		 /*******************************
 		 *            DEBUGGING		*
 		 *******************************/
-
-rdb_list_intern :-
-    intern_table(IDB),
-    extern_table(EDB),
-    forall((rocks_enum(IDB, Term, Id), Term \== '$$LastID'),
-           ( assertion((rocks_get(EDB, Id, Term2), Term2 =@= Term)),
-             format('~p ~t~20|<-> ~p~n', [Id, Term]))).
-
-rdb_list_triples :-
-    triple_table(TDB),
-    forall(rocks_enum(TDB, SP, O),
-           list_triple(SP, O)).
-
-list_triple(SP, Oid) :-
-    sp_s_p(SP,Sid,Pid),
-    extern(Sid, S),
-    extern(Pid, P),
-    extern(Oid, O),
-    format('~p ~t~20|~p ~t~40|~p~n', [S,P,O]).
 
 		 /*******************************
 		 *           MESSAGES		*
