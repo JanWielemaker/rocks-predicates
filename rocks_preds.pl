@@ -39,12 +39,14 @@
             rdb_clause/2,               % +Head,-Body
             rdb_clause/3,               % +Dir, +Head, -Body
             rdb_clause/4,               % +Dir, +Head, -Body, ?CRef
+            rdb_nth_clause/3,           % +Head,?Nth,?Reference
+            rdb_nth_clause/4,           % +Dir,+Head,?Nth,?Reference
             rdb_load_file/1,            % +File
             rdb_load_file/2,            % +Dir, +File
             rdb_current_predicate/1,    % ?PI
             rdb_current_predicate/2,    % +Dir,?PI
-            rdb_predicate_property/2,   % :PI,?Property
-            rdb_predicate_property/3,   % ?Dir,:PI,?Property
+            rdb_predicate_property/2,   % :Head, ?Property
+            rdb_predicate_property/3,   % ?Dir, :Head, ?Property
             rdb_index/2,                % :PI, +Spec
             rdb_index/3,                % +Dir, :PI, +Spec
             rdb_destroy_index/2,        % :PI,+Spec
@@ -69,6 +71,8 @@
     rdb_predicate_property(?, :, ?),
     rdb_clause(:, -),
     rdb_clause(+, :, -),
+    rdb_nth_clause(:, ?, ?),
+    rdb_nth_clause(+, :, ?, ?),
     rdb_clause(+, :, -, ?),
     rdb_load_file(:),
     rdb_index(:, +),
@@ -169,6 +173,26 @@ clause_head_body((Head0 :- Body0), Head, Body) =>
 clause_head_body(Head0, Head, Body) =>
     Head = Head0,
     Body = true.
+
+%!  rdb_nth_clause(+Head, ?Nth, ?Reference) is nondet.
+%!  rdb_nth_clause(+Dir, +Head, ?Nth, ?Reference) is nondet.
+%
+%   True when Reference is the clause reference   for  the Nth clause in
+%   Head.
+
+rdb_nth_clause(Head, Nth, Reference) :-
+    default_db(Dir),
+    rdb_nth_clause(Dir, Head, Nth, Reference).
+
+rdb_nth_clause(Dir, Head, Nth, Cref) =>
+    pi_head(PI, Head),
+    pred_property_key(PI, last_clause, KeyLC),
+    rdb_open(Dir, DB),
+    rocks_get(DB, KeyLC, Max),
+    between(1, Max, Nth),
+    pred_clause_key(PI, Nth, Cref),
+    rocks_get(DB, Cref, (Head :- _)).
+
 
 %!  rdb_load_file(:File) is det.
 %!  rdb_load_file(+Dir, :File) is det.
@@ -301,16 +325,21 @@ rdb_candidates(DB, Spec, M:Head, Candidates), integer(Spec) =>
     rocks_get(DB, Key, Candidates).
 
 
-%!  rdb_predicate_property(:PI, ?Property) is nondet.
-%!  rdb_predicate_property(?Dir, :PI, ?Property) is nondet.
+%!  rdb_predicate_property(:Head, ?Property) is nondet.
+%!  rdb_predicate_property(?Dir, :Head, ?Property) is nondet.
 %
 %   Query properties of a persistent predicate
 
-rdb_predicate_property(PI, Property) :-
+rdb_predicate_property(Head, Property) :-
     default_db(Dir),
-    rdb_predicate_property(Dir, PI, Property).
+    rdb_predicate_property(Dir, Head, Property).
 
-rdb_predicate_property(Dir, PI, Property) :-
+rdb_predicate_property(Dir, Head, Property), var(Head) =>
+    rdb_current_predicate(Dir, PI),
+    pi_head(PI, Head),
+    property(Property, Dir, PI).
+rdb_predicate_property(Dir, Head, Property) =>
+    pi_head(PI, Head),
     rdb_current_predicate(Dir, PI),
     property(Property, Dir, PI).
 
