@@ -7,6 +7,8 @@
             rdb_clause/4,               % +Dir, +Head, -Body, ?CRef
             rdb_load_file/1,            % +File
             rdb_load_file/2,            % +Dir, +File
+            rdb_current_predicate/1,    % ?PI
+            rdb_current_predicate/2,    % +Dir,?PI
             rdb_index/2,                % :PI, +Spec
             rdb_index/3                 % +Dir, :PI, +Spec
           ]).
@@ -23,6 +25,8 @@
 :- meta_predicate
     rdb_assertz(:),
     rdb_assertz(+, :),
+    rdb_current_predicate(:),
+    rdb_current_predicate(+, :),
     rdb_clause(:, -),
     rdb_clause(+, :, -),
     rdb_clause(+, :, -, ?),
@@ -52,10 +56,37 @@ rdb_assertz(Dir, Clause) :-
     pred_property_key(PI, last_clause, KeyLC),
     (   rocks_get(DB, KeyLC, Id)
     ->  NId is Id+1
-    ;   NId is 1
+    ;   register_predicate(DB, PI),
+        NId is 1
     ),
     pred_clause_key(PI, NId, KeyClause),
     rocks_put(DB, KeyClause, (Head:-Body)).
+
+register_predicate(DB, PI) :-
+    pred_current_key(PI, Key),
+    rocks_put(DB, Key, true).
+
+%!  rdb_current_predicate(?PI) is nondet.
+%!  rdb_current_predicate(+Dir, ?PI) is nondet.
+
+rdb_current_predicate(PI) :-
+    default_db(Dir),
+    rdb_current_predicate(Dir, PI).
+
+rdb_current_predicate(Dir, PI), ground(PI) =>
+    rdb_open(Dir, DB),
+    pred_current_key(PI, Key),
+    rocks_get(DB, Key, true).
+rdb_current_predicate(Dir, PI) =>
+    rdb_open(Dir, DB),
+    pred_current_prefix(Prefix),
+    rocks_enum_from(DB, Key, true, Prefix),
+    (   sub_string(Key, 0, _, After, Prefix)
+    ->  sub_string(Key, _, After, 0, PIs),
+        term_string(PIs, PI)
+    ;   !, fail
+    ).
+
 
 %!  rdb_clause(:Head, -Body) is nondet.
 %!  rdb_clause(+Dir, :Head, -Body) is nondet.
@@ -201,6 +232,11 @@ pred_clause_key(PI, Nth, Key) :-
 
 pred_clause_prefix(PI, Prefix) :-
     format(string(Prefix), '~q\u0001', [PI]).
+
+pred_current_key(PI, Key) :-
+    format(string(Key), 'meta\u0001~q', [PI]).
+
+pred_current_prefix("meta\u0001").
 
 pred_property_key(PI, Prop, Key) :-
     format(string(Key), '~q\u0002~w', [PI,Prop]).
