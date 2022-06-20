@@ -60,7 +60,6 @@
 :- use_module(library(prolog_code)).
 :- use_module(library(debug)).
 :- use_module(library(filesex)).
-:- use_module(library(lists)).
 
 /** <module> Store full predicates in a RocksDB
 
@@ -116,7 +115,8 @@ rdb_assertz(Dir, Clause) :-
     ),
     rocks_put(DB, KeyLC, NId),
     pred_clause_key(PI, NId, KeyClause),
-    rocks_put(DB, KeyClause, (Head:-Body)).
+    rocks_put(DB, KeyClause, (Head:-Body)),
+    add_to_indexes(DB, PI, Head, KeyClause).
 
 register_predicate(DB, PI) :-
     pred_current_key(PI, Key),
@@ -166,13 +166,8 @@ rdb_current_predicate(Dir, PI), ground(PI) =>
 rdb_current_predicate(Dir, PI) =>
     pred_table(Dir, DB),
     pred_current_prefix(Prefix),
-    rocks_enum_from(DB, Key, V, Prefix),
-    (   sub_string(Key, 0, _, After, Prefix)
-    ->  sub_string(Key, _, After, 0, PIs),
-        V == true,
-        term_string(PI, PIs)
-    ;   !, fail
-    ).
+    rocks_enum_prefix(DB, PIs, true, Prefix),
+    term_string(PI, PIs).
 
 
 %!  rdb_clause(:Head, -Body) is nondet.
@@ -194,15 +189,12 @@ rdb_clause(Dir, Head, Body, CRef) =>
     rdb_open(Dir, DB),
     pi_head(PI, Head),
     (   rdb_clause_index(DB, PI, Index),
-        rdb_candidates(DB, Index, Head, Candidates)
-    ->  member(CRef, Candidates),
+        rdb_candidates(DB, Index, Head, IndexPrefix)
+    ->  rdb_candidate(DB, IndexPrefix, CRef),
         rocks_get(DB, CRef, (Head :- Body))
     ;   pred_clause_prefix(PI, Prefix),
-        rocks_enum_from(DB, CRef, (Head:-Body), Prefix),
-        (   sub_string(CRef, 0, _, _, Prefix)
-        ->  true
-        ;   !, fail
-        )
+        rocks_enum_prefix(DB, Suffix, (Head:-Body), Prefix),
+        string_concat(Prefix, Suffix, CRef)
     ).
 
 clause_head_body((Head0 :- Body0), Head, Body) =>
@@ -299,12 +291,13 @@ add_to_clause_index(DB, PI, Spec, _:Head, CRef), integer(Spec) =>
     arg(Spec, Head, Arg),
     term_hash(Arg, 1, 2147483647, Hash),
     assertion(nonvar(Hash)),            % TBD: variables in the head
-    pred_index_key(PI, Spec, Hash, Key),
-    (   rocks_get(DB, Key, Clauses)
-    ->  true
-    ;   Clauses = []
-    ),
-    rocks_put(DB, Key, [CRef|Clauses]).
+    pred_index_key(PI, Spec, Hash, CRef, Key),
+    rocks_put(DB, Key, 1).
+
+add_to_indexes(DB, PI, Head, CRef) :-
+    forall(rdb_clause_index(DB, PI, Index),
+           add_to_clause_index(DB, PI, Index, _:Head, CRef)).
+
 
 %!  rdb_destroy_index(:PI, +Spec) is det.
 %!  rdb_destroy_index(+Dir, :PI, +Spec) is det.
@@ -317,7 +310,7 @@ rdb_destroy_index(Dir, PI, Spec) :-
     rdb_open(Dir, DB),
     pred_index_key(PI, Spec, KeyIndex),
     rocks_put(DB, KeyIndex, destroying),
-    pred_index_prefix(PI, Spec, Prefix),
+    pred_indexes_prefix(PI, Spec, Prefix),
     (   rocks_enum_from(DB, Key, _, Prefix),
         (   sub_string(Key, 0, _, _, Prefix)
         ->  rocks_delete(DB, Key),
@@ -340,27 +333,26 @@ rdb_destroy_index(Dir, PI, Spec) :-
 
 rdb_clause_index(DB, PI, Index) :-
     pred_index_prefix(PI, Prefix),
-    rocks_enum_from(DB, Key, Value, Prefix),
-    (   sub_string(Key, 0, _, After, Prefix)
-    ->  Value == true,                  % Index is valid
-        sub_string(Key, _, After, 0, IndexS),
-        term_string(Index, IndexS)
-    ;   !, fail
-    ).
+    rocks_enum_prefix(DB, IndexS, true, Prefix),
+    term_string(Index, IndexS).
 
 flush_index_cache(DB, PI) :-
     abolish_table_subgoals(rdb_clause_index(DB, PI, _)).
 
-%!  rdb_candidates(+DB, +Spec, :Head, -Candidates) is semidet.
+%!  rdb_candidates(+DB, +Spec, :Head, -Prefix) is semidet.
 
-rdb_candidates(DB, Spec, M:Head, Candidates), integer(Spec) =>
+rdb_candidates(DB, Spec, M:Head, Prefix), integer(Spec) =>
     arg(Spec, Head, Arg),
     nonvar(Arg),
     term_hash(Arg, 1, 2147483647, Hash),
     nonvar(Hash),
     pi_head(PI, M:Head),
-    pred_index_key(PI, Spec, Hash, Key),
-    rocks_get(DB, Key, Candidates).
+    pred_index_prefix(PI, Spec, Hash, Prefix),
+    rdb_candidate(DB, Prefix, _),
+    !.
+
+rdb_candidate(DB, Prefix, Candidate) :-
+    rocks_enum_prefix(DB, Candidate, 1, Prefix).
 
 
 %!  rdb_predicate_property(:Head, ?Property) is nondet.
@@ -372,9 +364,9 @@ rdb_predicate_property(Head, Property) :-
     default_db(Dir),
     rdb_predicate_property(Dir, Head, Property).
 
-rdb_predicate_property(Dir, Head, Property), var(Head) =>
+rdb_predicate_property(Dir, M:Head, Property), var(Head) =>
     rdb_current_predicate(Dir, PI),
-    pi_head(PI, Head),
+    pi_head(PI, M:Head),
     property(Property, Dir, PI).
 rdb_predicate_property(Dir, Head, Property) =>
     pi_head(PI, Head),
@@ -422,11 +414,14 @@ pred_index_prefix(PI, Key) :-
 pred_index_key(PI, Spec, Key) :-
     format(string(Key), '~q\u0003~q', [PI,Spec]).
 
-pred_index_prefix(PI, Spec, Key) :-
+pred_indexes_prefix(PI, Spec, Key) :-
     format(string(Key), '~q\u0004~q\u0002', [PI, Spec]).
 
-pred_index_key(PI, Spec, Hash, Key) :-
-    format(string(Key), '~q\u0004~q\u0002~16r', [PI,Spec,Hash]).
+pred_index_prefix(PI, Spec, Hash, Key) :-
+    format(string(Key), '~q\u0004~q\u0002~16r\u0001', [PI,Spec,Hash]).
+
+pred_index_key(PI, Spec, Hash, CRef, Key) :-
+    format(string(Key), '~q\u0004~q\u0002~16r\u0001~w', [PI,Spec,Hash,CRef]).
 
 %!  rdb_open(+Directory, -DB)
 %
