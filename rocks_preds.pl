@@ -136,6 +136,7 @@ rdb_retract(Dir, Clause) :-
     pred_property_key(PI, erased, KeyErased),
     rdb_clause(Dir, Head, Body, CRef),
     rocks_delete(DB, CRef),
+    delete_from_indexes(DB, PI, Head, CRef),
     (   rocks_get(DB, KeyErased, Erased0)
     ->  Erased is Erased0+1
     ;   Erased is 1
@@ -294,10 +295,20 @@ add_to_clause_index(DB, PI, Spec, _:Head, CRef), integer(Spec) =>
     pred_index_key(PI, Spec, Hash, CRef, Key),
     rocks_put(DB, Key, 1).
 
+delete_from_clause_index(DB, PI, Spec, _:Head, CRef), integer(Spec) =>
+    arg(Spec, Head, Arg),
+    term_hash(Arg, 1, 2147483647, Hash),
+    assertion(nonvar(Hash)),            % TBD: variables in the head
+    pred_index_key(PI, Spec, Hash, CRef, Key),
+    rocks_delete(DB, Key).
+
 add_to_indexes(DB, PI, Head, CRef) :-
     forall(rdb_clause_index(DB, PI, Index),
            add_to_clause_index(DB, PI, Index, _:Head, CRef)).
 
+delete_from_indexes(DB, PI, Head, CRef) :-
+    forall(rdb_clause_index(DB, PI, Index),
+           delete_from_clause_index(DB, PI, Index, _:Head, CRef)).
 
 %!  rdb_destroy_index(:PI, +Spec) is det.
 %!  rdb_destroy_index(+Dir, :PI, +Spec) is det.
