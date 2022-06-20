@@ -10,6 +10,7 @@
 % Load-time: 2088 sec CPU.
 % Count triples: 165 sec.
 % DB size: 5.2Gb
+db(wn, '/home/janw/src/prolog/hdt-data/wordnet.hdt').
 db(geonames, '/home/janw/src/prolog/hdt-data/geonames.hdt').
 
 :- dynamic
@@ -102,4 +103,4 @@ hdt_access(N) :-
     prolog:message//1.
 
 prolog:message(rdf_load(File, T, CPU)) -->
-    [ 'Loaded ~f in ~3f sec (~3f sec CPU)'- [File, T, CPU] ].
+    [ 'Loaded ~w in ~3f sec (~3f sec CPU)'- [File, T, CPU] ].
