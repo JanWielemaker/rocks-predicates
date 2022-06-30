@@ -352,15 +352,13 @@ flush_index_cache(DB, PI) :-
 
 %!  rdb_candidates(+DB, +Spec, :Head, -Prefix) is semidet.
 
-rdb_candidates(DB, Spec, M:Head, Prefix), integer(Spec) =>
+rdb_candidates(_DB, Spec, M:Head, Prefix), integer(Spec) =>
     arg(Spec, Head, Arg),
     nonvar(Arg),
     term_hash(Arg, 1, 2147483647, Hash),
     nonvar(Hash),
     pi_head(PI, M:Head),
-    pred_index_prefix(PI, Spec, Hash, Prefix),
-    rdb_candidate(DB, Prefix, _),
-    !.
+    pred_index_prefix(PI, Spec, Hash, Prefix).
 
 rdb_candidate(DB, Prefix, Candidate) :-
     rocks_enum_prefix(DB, Candidate, 1, Prefix).
