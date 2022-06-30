@@ -88,15 +88,19 @@ random_triple(S,P,O) :-
 count_triples(Count) :-
     aggregate_all(count, rdf(_S,_P,_O), Count).
 
-access(N) :-
-    findall(S, (between(1,N,_), random_triple(S,_,_)), Subjects0),
-    random_permutation(Subjects0, Subjects),
-    profile(maplist(is_subject, Subjects)).
 
-hdt_access(N) :-
+access(N) :-
+    access(N, time).                    % or `profile`
+
+access(N, How) :-
     findall(S, (between(1,N,_), random_triple(S,_,_)), Subjects0),
     random_permutation(Subjects0, Subjects),
-    time(maplist(hdt_is_subject(geonames), Subjects)).
+    call(How, maplist(is_subject, Subjects)).
+
+hdt_access(File, N, How) :-
+    findall(S, (between(1,N,_), random_triple(S,_,_)), Subjects0),
+    random_permutation(Subjects0, Subjects),
+    call(How, maplist(hdt_is_subject(File), Subjects)).
 
 
 :- multifile
