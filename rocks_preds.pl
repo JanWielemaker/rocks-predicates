@@ -34,6 +34,9 @@
 
 :- module(rocks_preds,
           [ rdb_open/2,                 % +Dir, -DB
+            rdb_open/3,                 % +Dir, -DB, +Options
+            rdb_close/0,
+            rdb_close/1,                % +Dir
             rdb_assertz/1,              % :Clause
             rdb_assertz/2,              % +Dir, :Clause
             rdb_retract/1,              % :Clause
@@ -90,8 +93,8 @@
 :- dynamic
     pred_table/2.                     % Dir, Table
 
-default_db(DB) :-
-    pred_table(DB, _),
+default_db(Dir) :-
+    pred_table(Dir, _),
     !.
 default_db('predicates.db').
 
@@ -433,21 +436,58 @@ pred_index_key(PI, Spec, Hash, CRef, Key) :-
     format(string(Key), '~q\u0004~q\u0002~16r\u0001~w', [PI,Spec,Hash,CRef]).
 
 %!  rdb_open(+Directory, -DB)
+%!  rdb_open(+Directory, -DB, +Options)
 %
 %   Open a database for persistent  predicates.   We  use one additional
 %   level of directories such that  we   can  add  multiple databases or
 %   additional information to the primary RocksDB database.
+%
+%   Database connections are cached, so that other predicates such as
+%   rdb_clause/2 can have a default table and also so that the `DB`
+%   blob doesn't need to be passed around but instead the Directory
+%   can be used as a kind of cache key. The most recently created table
+%   is the default table.
+%
+%   Options are passed to rocks_open/3 (`key` and `value` are ignored).
+%
+% @bug You must call rdb_close(Directory) to ensure clean shutdown.
+%      Failure to call rdb_close/1 usually doesn't result in data
+%      loss because rocksdb can recover, depending on the setting
+%      of the `sync` option.
+% @see https://github.com/facebook/rocksdb/wiki/Known-Issues
 
 rdb_open(Dir, DB) :-
     pred_table(Dir, DB),
     !.
 rdb_open(Dir, DB) :-
+    rdb_open(Dir, DB, []).
+
+rdb_open(Dir, DB, Options) :-
     ensure_directory(Dir),
     directory_file_path(Dir, predicates, PredName),
-    rocks_open(PredName,  DB,
-               [ key(string), value(term)
-               ]),
+    merge_options([key(string), value(term)], Options, Options1),
+    rocks_open(PredName,  DB, Options1),
     asserta(pred_table(Dir, DB)).
+
+%!  rdb_close(+Directory)
+%
+%   Close a database for persistent predicates and remove it from
+%   the cache of open databases.
+
+rdb_close(Dir) :-
+    pred_table(Dir, DB),
+    rocks_close(DB),
+    retractall(pred_table(Dir, DB)).
+
+%!  rdb_close
+%
+%   Close the default database and remove it.
+%   @see rdb_close/1
+
+rdb_close :-
+    default_db(Dir),
+    rdb_close(Dir).
+
 
 ensure_directory(Dir) :-
     exists_directory(Dir),
