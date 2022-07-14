@@ -489,11 +489,9 @@ rdb_close :-
     rdb_close(Dir).
 
 
-ensure_directory(Dir) :-
-    exists_directory(Dir),
-    !.
-ensure_directory(Dir) :-
-    make_directory(Dir).
+ensure_directory(Dir),  exists_directory(Dir) => true.
+ensure_directory(Dir) =>
+    make_directory_path(Dir).
 
 
 		 /*******************************
